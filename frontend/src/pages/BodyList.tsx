@@ -45,6 +45,7 @@ import {
   type BodyMaterial,
   type BodyShape,
 } from '@/types/body';
+import { coatAwaitingRecheck } from '@/types/coat';
 
 /** 模块级常量：保证 useFilterQuery 的 keys 引用稳定 */
 const FILTER_KEYS = ['material', 'shape'] as const;
@@ -181,7 +182,7 @@ export default function BodyList() {
           <Row gutter={[16, 16]}>
             {filtered.map((body) => {
               const stat = progressOf(body.id);
-              const recheck = coats.some((coat) => coat.bodyId === body.id && coat.needRecheck);
+              const recheck = coats.some((coat) => coat.bodyId === body.id && coatAwaitingRecheck(coat));
               return (
                 <Col key={body.id} xs={24} md={12} xl={8}>
                   <Card

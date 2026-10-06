@@ -69,7 +69,7 @@ npm run preview    # 本地预览构建产物（http://localhost:22818）
 | --- | --- | --- | --- |
 | `/bodies` | 胎体与器型台账 | 新建胎体、按材质与器型筛选（同步 URL query），卡片回显已完成道次与最近荫房记录 | Body、Coat、Room |
 | `/coats` | 髹涂道次编排 | 拖拽调整道次先后并重编号、批量改漆种与状态、同器型自动带出上次漆种与间隔建议 | Coat、Body |
-| `/rooms` | 荫房温湿度记录 | 按区间判定适宜 / 偏干 / 偏湿，越界回写关联道次为「待复检」，支持日期区间筛选 | Room、Coat |
+| `/rooms` | 荫房温湿度记录 | 按区间判定适宜 / 偏干 / 偏湿，越界回写关联道次为「待复检」；**按道次核荫干时长**（涂完到下一道之间的累计在房时长与该道建议值相比，差四成标待复检、差值大的排最前、无记录的老档案列未对账）；按容量把满房后到的件顺延第二天；支持日期区间筛选 | Room、Coat |
 | `/polish` | 打磨与推光工序 | 按道次生成目数序列（320→2000），未打磨完的道次禁止进入下一道罩漆 | Polish、Coat |
 | `/inlays` | 镶嵌纹饰登记 | 螺钿 / 蛋壳 / 描金 / 戗金登记与批量调整分类，器型示意区叠加显示 | Inlay、Body |
 | `/export` | 成品质检与导出 | 质检登记（返工定位到具体道次与荫房记录）、返工清单、JSON 导入导出与清空重播种 | Inspect 及全部模型 |
@@ -83,13 +83,17 @@ npm run preview    # 本地预览构建产物（http://localhost:22818）
 | 模型 | 文件 | 关键字段 | 说明 |
 | --- | --- | --- | --- |
 | Body 胎体 | `src/types/body.ts` | `id` `code` `material`（木/脱胎/金属） `shape`（碗/盘/盒/瓶） `sizeMm` `ownerName` `state`（待髹涂/髹涂中/待荫干/已完成） | 新建后进入道次编排，卡片回显进度与最近荫房 |
-| Coat 髹涂道次 | `src/types/coat.ts` | `id` `bodyId` `seq` `paintType`（生漆/色漆/罩漆） `colorName` `coatDate` `thicknessUm` `state`（待涂/已涂/待打磨/已完成） `needRecheck` | 拖拽调序，同器型带出上次漆种与间隔建议 |
-| Room 荫房记录 | `src/types/room.ts` | `id` `bodyId` `date` `tempC` `humidityPct` `inAt` `outAt` `verdict`（适宜/偏干/偏湿） | 越界即回写关联道次为待复检 |
+| Coat 髹涂道次 | `src/types/coat.ts` | `id` `bodyId` `seq` `paintType`（生漆/色漆/罩漆） `colorName` `coatDate` `thicknessUm` `suggestDryingHours`（建议荫干小时数） `state`（待涂/已涂/待打磨/已完成） `needRecheck`（温湿度越界回写） `dryingRecheck`（按道次核时长：true 待复检 / false 已对账 / null 未对账） | 拖拽调序，同器型带出上次漆种与间隔建议；建议时长在道次页逐道填写 |
+| Room 荫房记录 | `src/types/room.ts` | `id` `bodyId` `date` `tempC` `humidityPct` `inAt` `outAt` `verdict`（适宜/偏干/偏湿） | 越界即回写关联道次为待复检；新登记按荫房容量（件/天，可在荫房页调整，存 localStorage）决定日期，当天放不下后到的件顺延第二天，已记下的记录不改动 |
 | Polish 打磨推光 | `src/types/polish.ts` | `id` `bodyId` `seq` `grit` `method`（水砂/推光/揩清） `durationMin` `operator` | 按道次生成目数序列 |
 | Inlay 镶嵌 | `src/types/inlay.ts` | `id` `bodyId` `type`（螺钿/蛋壳/描金/戗金） `pattern` `position` `materialNote` | 器型示意区叠加显示，支持批量改分类 |
 | Inspect 质检 | `src/types/inspect.ts` | `id` `bodyId` `verdict`（合格/返工） `defectNote` `inspector` `date` `defectCoatSeq` `defectRoomId` | 返工定位到道次与荫房记录并生成返工清单 |
 
-数据结构版本号 `DB_SCHEMA_VERSION` 定义在 `src/utils/db.ts`，当前为 `v2`：`coats` 表增加 `paintType` 索引，并在 Dexie `.upgrade()` 中为历史记录回填 `paintType = 'raw'`、`needRecheck = false`、`thicknessUm = 40`。
+**按道次核荫干时长**（`src/utils/dryingReconcile.ts`）：每道窗口 = 该道涂刷日（含）至下一道涂刷日（不含，末道开放），窗口内该件每次 `inAt→outAt`（跨夜自动加 24h）求和为实际累计在房时长；与 `suggestDryingHours` 相比，`|实际−建议|/建议 ≥ 0.4` 时 `dryingRecheck=true`（待复检），有记录但不足四成为已对账，窗口内一条记录都没有为**未对账**（老档案保留，不算异常）。列表先按状态再按差值比例降序，差得多的在最前。任何进出房 / 道次写入都会自动重算并落库，值守补记把缺口补平后待复检标记自动摘除（也可在荫房页点「按道次重算」手动触发）。容量调度在 `src/utils/capacity.ts`，按同日不同胎体件数计数（一件一天多次进出仍占一个坑位）。
+
+数据结构版本号 `DB_SCHEMA_VERSION` 定义在 `src/utils/db.ts`，当前为 `v3`：
+- v1→v2：`coats` 表增加 `paintType` 索引，回填 `paintType = 'raw'`、`needRecheck = false`、`thicknessUm = 40`；
+- v2→v3：`Coat` 增加 `suggestDryingHours`（按漆种回填：生漆 24h / 色漆 18h / 罩漆 12h）与 `dryingRecheck`（先置 null），首次载入后按现有荫房记录补算——老档案窗口内无记录时保持「未对账」，不会被当成异常。
 
 ---
 
@@ -105,7 +109,7 @@ sologsb101-1018/
 │   │   ├── hooks/                # useCoatProgress.ts useIdbTable.ts
 │   │   ├── pages/                # BodyList.tsx CoatBoard.tsx RoomLog.tsx PolishBoard.tsx InlayBoard.tsx ExportView.tsx
 │   │   ├── router/               # index.tsx
-│   │   ├── utils/                # humidity.ts db.ts export.ts
+│   │   ├── utils/                # humidity.ts dryingReconcile.ts capacity.ts db.ts export.ts
 │   │   ├── styles/               # main.css
 │   │   ├── App.tsx main.tsx
 │   ├── public/favicon.svg

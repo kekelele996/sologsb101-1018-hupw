@@ -10,6 +10,7 @@ import { BODY_MATERIAL_LABEL, BODY_SHAPE_LABEL } from '@/types/body';
 import { COAT_STATE_LABEL, PAINT_TYPE_LABEL } from '@/types/coat';
 import { ROOM_VERDICT_LABEL } from '@/types/room';
 import { INSPECT_VERDICT_LABEL } from '@/types/inspect';
+import { DRYING_STATUS_LABEL, reconcileAllDrying } from './dryingReconcile';
 import type { LacquerSnapshot } from './db';
 
 /** 触发浏览器下载 */
@@ -98,7 +99,8 @@ export function exportReworkList(
 
 /** 工序台账 CSV（全部胎体 + 道次 + 荫房） */
 export function exportLedgerCsv(bodies: Body[], coats: Coat[], rooms: Room[]): string {
-  const header = ['胎体编号', '材质', '器型', '尺寸(mm)', '委托/藏家', '道次', '漆种', '色名', '涂刷日期', '湿膜(μm)', '道次状态', '待复检', '荫房日期', '温度(℃)', '湿度(%)', '判定'];
+  const header = ['胎体编号', '材质', '器型', '尺寸(mm)', '委托/藏家', '道次', '漆种', '色名', '涂刷日期', '湿膜(μm)', '建议荫干(h)', '累计在房(h)', '时长对账', '道次状态', '待复检', '荫房日期', '温度(℃)', '湿度(%)', '判定'];
+  const dryingOf = new Map(reconcileAllDrying(coats, rooms).map((row) => [row.coat.id, row]));
   const lines: string[] = [header.map(csvCell).join(',')];
   bodies.forEach((body) => {
     const bodyCoats = coats.filter((item) => item.bodyId === body.id).sort((a, b) => a.seq - b.seq);
@@ -107,6 +109,7 @@ export function exportLedgerCsv(bodies: Body[], coats: Coat[], rooms: Room[]): s
     for (let index = 0; index < rowCount; index += 1) {
       const coat = bodyCoats[index];
       const room = bodyRooms[index];
+      const drying = coat ? dryingOf.get(coat.id) : undefined;
       lines.push(
         [
           index === 0 ? body.code : '',
@@ -119,6 +122,9 @@ export function exportLedgerCsv(bodies: Body[], coats: Coat[], rooms: Room[]): s
           coat ? coat.colorName : '',
           coat ? coat.coatDate : '',
           coat ? coat.thicknessUm : '',
+          coat ? coat.suggestDryingHours : '',
+          coat && drying && drying.status !== 'unreconciled' ? drying.actualHours : '',
+          coat && drying ? DRYING_STATUS_LABEL[drying.status] : '',
           coat ? COAT_STATE_LABEL[coat.state] : '',
           coat ? (coat.needRecheck ? '是' : '否') : '',
           room ? room.date : '',

@@ -7,7 +7,7 @@
  */
 import Dexie, { type Table } from 'dexie';
 import type { Body } from '@/types/body';
-import type { Coat, PaintType } from '@/types/coat';
+import { DEFAULT_SUGGEST_DRYING_HOURS, type Coat, type PaintType } from '@/types/coat';
 import type { Room } from '@/types/room';
 import type { Polish } from '@/types/polish';
 import type { Inlay } from '@/types/inlay';
@@ -16,14 +16,16 @@ import type { Inspect } from '@/types/inspect';
 /** 数据库名（README 与导出文件均使用该名称） */
 export const DB_NAME = 'gblacquer';
 
-/** 当前数据结构版本号 */
-export const DB_SCHEMA_VERSION = 2;
+/** 当前数据结构版本号
+ * v3：Coat 增加 suggestDryingHours（建议荫干时长）与 dryingRecheck（按道次对账状态，null=未对账） */
+export const DB_SCHEMA_VERSION = 3;
 
 /** localStorage 侧少量元数据键 */
 export const LS_KEYS = {
   dbVersion: 'gblacquer:db-version',
   lastBackupAt: 'gblacquer:last-backup-at',
   uiPrefs: 'gblacquer:ui-prefs',
+  roomCapacity: 'gblacquer:room-capacity',
 } as const;
 
 export interface UiPrefs {
@@ -99,7 +101,7 @@ class LacquerDatabase extends Dexie {
     });
 
     // v2：Coat 增加 paintType 索引；历史记录缺少 paintType 时按「生漆」回填
-    this.version(DB_SCHEMA_VERSION)
+    this.version(2)
       .stores({
         bodies: 'id, code, material, shape, state, updatedAt',
         coats: 'id, bodyId, seq, paintType, state, needRecheck, updatedAt',
@@ -117,6 +119,30 @@ class LacquerDatabase extends Dexie {
             if (!legal.includes(coat.paintType)) coat.paintType = 'raw';
             if (typeof coat.needRecheck !== 'boolean') coat.needRecheck = false;
             if (typeof coat.thicknessUm !== 'number') coat.thicknessUm = 40;
+          });
+      });
+
+    // v3：Coat 增加建议荫干时长与按道次对账状态（不新增索引）；
+    // suggestDryingHours 按漆种默认值回填，dryingRecheck 先置 null（未对账），
+    // 首次载入后由 syncDryingRecheck 依实际荫房记录补算，老档案无记录时保持未对账。
+    this.version(DB_SCHEMA_VERSION)
+      .stores({
+        bodies: 'id, code, material, shape, state, updatedAt',
+        coats: 'id, bodyId, seq, paintType, state, needRecheck, updatedAt',
+        rooms: 'id, bodyId, date, verdict, updatedAt',
+        polishes: 'id, bodyId, seq, method, updatedAt',
+        inlays: 'id, bodyId, type, position, updatedAt',
+        inspects: 'id, bodyId, verdict, date, updatedAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table<Coat>('coats')
+          .toCollection()
+          .modify((coat) => {
+            if (typeof coat.suggestDryingHours !== 'number' || coat.suggestDryingHours <= 0) {
+              coat.suggestDryingHours = DEFAULT_SUGGEST_DRYING_HOURS[coat.paintType];
+            }
+            if (coat.dryingRecheck !== true && coat.dryingRecheck !== false) coat.dryingRecheck = null;
           });
       });
   }
@@ -184,21 +210,29 @@ export async function seedDatabase(): Promise<void> {
   ];
 
   const coats: Coat[] = [
-    { id: 'coat_0101', bodyId: 'body_01', seq: 1, paintType: 'raw', colorName: '漆黑', coatDate: '2026-03-02', thicknessUm: 40, state: 'done', needRecheck: false, createdAt: now - 86400000 * 11, updatedAt: now - 86400000 * 10 },
-    { id: 'coat_0102', bodyId: 'body_01', seq: 2, paintType: 'color', colorName: '朱红', coatDate: '2026-03-06', thicknessUm: 45, state: 'toPolish', needRecheck: true, createdAt: now - 86400000 * 7, updatedAt: now - 86400000 * 2 },
-    { id: 'coat_0103', bodyId: 'body_01', seq: 3, paintType: 'topcoat', colorName: '推光本色', coatDate: '2026-03-12', thicknessUm: 30, state: 'todo', needRecheck: false, createdAt: now - 86400000 * 6, updatedAt: now - 86400000 * 6 },
-    { id: 'coat_0201', bodyId: 'body_02', seq: 1, paintType: 'raw', colorName: '漆黑', coatDate: '2026-03-03', thicknessUm: 35, state: 'done', needRecheck: false, createdAt: now - 86400000 * 8, updatedAt: now - 86400000 * 7 },
-    { id: 'coat_0202', bodyId: 'body_02', seq: 2, paintType: 'color', colorName: '赭石', coatDate: '2026-03-08', thicknessUm: 42, state: 'coated', needRecheck: true, createdAt: now - 86400000 * 5, updatedAt: now - 86400000 },
-    { id: 'coat_0301', bodyId: 'body_03', seq: 1, paintType: 'raw', colorName: '漆黑', coatDate: '2026-02-10', thicknessUm: 38, state: 'done', needRecheck: false, createdAt: now - 86400000 * 26, updatedAt: now - 86400000 * 25 },
-    { id: 'coat_0302', bodyId: 'body_03', seq: 2, paintType: 'color', colorName: '石绿', coatDate: '2026-02-18', thicknessUm: 44, state: 'done', needRecheck: false, createdAt: now - 86400000 * 20, updatedAt: now - 86400000 * 18 },
-    { id: 'coat_0303', bodyId: 'body_03', seq: 3, paintType: 'topcoat', colorName: '描金', coatDate: '2026-02-26', thicknessUm: 28, state: 'done', needRecheck: false, createdAt: now - 86400000 * 14, updatedAt: now - 86400000 * 4 },
+    { id: 'coat_0101', bodyId: 'body_01', seq: 1, paintType: 'raw', colorName: '漆黑', coatDate: '2026-03-02', thicknessUm: 40, state: 'done', suggestDryingHours: 24, dryingRecheck: false, needRecheck: false, createdAt: now - 86400000 * 11, updatedAt: now - 86400000 * 10 },
+    { id: 'coat_0102', bodyId: 'body_01', seq: 2, paintType: 'color', colorName: '朱红', coatDate: '2026-03-06', thicknessUm: 45, state: 'toPolish', suggestDryingHours: 18, dryingRecheck: true, needRecheck: true, createdAt: now - 86400000 * 7, updatedAt: now - 86400000 * 2 },
+    { id: 'coat_0103', bodyId: 'body_01', seq: 3, paintType: 'topcoat', colorName: '推光本色', coatDate: '2026-03-12', thicknessUm: 30, state: 'todo', suggestDryingHours: 12, dryingRecheck: null, needRecheck: false, createdAt: now - 86400000 * 6, updatedAt: now - 86400000 * 6 },
+    { id: 'coat_0201', bodyId: 'body_02', seq: 1, paintType: 'raw', colorName: '漆黑', coatDate: '2026-03-03', thicknessUm: 35, state: 'done', suggestDryingHours: 24, dryingRecheck: true, needRecheck: false, createdAt: now - 86400000 * 8, updatedAt: now - 86400000 * 7 },
+    { id: 'coat_0202', bodyId: 'body_02', seq: 2, paintType: 'color', colorName: '赭石', coatDate: '2026-03-08', thicknessUm: 42, state: 'coated', suggestDryingHours: 18, dryingRecheck: null, needRecheck: true, createdAt: now - 86400000 * 5, updatedAt: now - 86400000 },
+    { id: 'coat_0301', bodyId: 'body_03', seq: 1, paintType: 'raw', colorName: '漆黑', coatDate: '2026-02-10', thicknessUm: 38, state: 'done', suggestDryingHours: 24, dryingRecheck: false, needRecheck: false, createdAt: now - 86400000 * 26, updatedAt: now - 86400000 * 25 },
+    { id: 'coat_0302', bodyId: 'body_03', seq: 2, paintType: 'color', colorName: '石绿', coatDate: '2026-02-18', thicknessUm: 44, state: 'done', suggestDryingHours: 18, dryingRecheck: false, needRecheck: false, createdAt: now - 86400000 * 20, updatedAt: now - 86400000 * 18 },
+    { id: 'coat_0303', bodyId: 'body_03', seq: 3, paintType: 'topcoat', colorName: '描金', coatDate: '2026-02-26', thicknessUm: 28, state: 'done', suggestDryingHours: 12, dryingRecheck: null, needRecheck: false, createdAt: now - 86400000 * 14, updatedAt: now - 86400000 * 4 },
   ];
 
   const rooms: Room[] = [
-    { id: 'room_0101', bodyId: 'body_01', date: '2026-03-03', tempC: 24, humidityPct: 78, inAt: '09:00', outAt: '21:00', verdict: 'suitable', createdAt: now - 86400000 * 10, updatedAt: now - 86400000 * 10 },
-    { id: 'room_0102', bodyId: 'body_01', date: '2026-03-07', tempC: 27, humidityPct: 56, inAt: '08:30', outAt: '20:00', verdict: 'dry', createdAt: now - 86400000 * 6, updatedAt: now - 86400000 * 2 },
+    // body_01 第 1 道窗口 03-02～03-06：12.5 + 12 = 24.5h（建议 24h，已对账）
+    { id: 'room_0101', bodyId: 'body_01', date: '2026-03-03', tempC: 24, humidityPct: 78, inAt: '09:00', outAt: '21:30', verdict: 'suitable', createdAt: now - 86400000 * 10, updatedAt: now - 86400000 * 10 },
+    { id: 'room_0103', bodyId: 'body_01', date: '2026-03-04', tempC: 24, humidityPct: 80, inAt: '18:00', outAt: '06:00', verdict: 'suitable', createdAt: now - 86400000 * 9, updatedAt: now - 86400000 * 9 },
+    // body_01 第 2 道窗口 03-06～03-12：仅 10.5h（建议 18h，差 41.7%，待复检；且偏干）
+    { id: 'room_0102', bodyId: 'body_01', date: '2026-03-07', tempC: 27, humidityPct: 56, inAt: '09:30', outAt: '20:00', verdict: 'dry', createdAt: now - 86400000 * 6, updatedAt: now - 86400000 * 2 },
+    // body_02 第 1 道窗口 03-03～03-08：仅 12.5h（建议 24h，差 47.9%，待复检；偏湿为起皱缺陷样例）
     { id: 'room_0201', bodyId: 'body_02', date: '2026-03-05', tempC: 23, humidityPct: 91, inAt: '10:00', outAt: '22:30', verdict: 'wet', createdAt: now - 86400000 * 5, updatedAt: now - 86400000 },
-    { id: 'room_0301', bodyId: 'body_03', date: '2026-02-20', tempC: 25, humidityPct: 76, inAt: '09:30', outAt: '21:30', verdict: 'suitable', createdAt: now - 86400000 * 18, updatedAt: now - 86400000 * 18 },
+    // body_03 第 1 道窗口 02-10～02-18：12 + 11.5 = 23.5h（建议 24h，已对账）
+    { id: 'room_0301', bodyId: 'body_03', date: '2026-02-11', tempC: 23, humidityPct: 76, inAt: '09:30', outAt: '21:30', verdict: 'suitable', createdAt: now - 86400000 * 25, updatedAt: now - 86400000 * 25 },
+    { id: 'room_0302', bodyId: 'body_03', date: '2026-02-13', tempC: 24, humidityPct: 77, inAt: '10:00', outAt: '21:30', verdict: 'suitable', createdAt: now - 86400000 * 23, updatedAt: now - 86400000 * 23 },
+    // body_03 第 2 道窗口 02-18～02-26：16h（建议 18h，差 11.1%，已对账）
+    { id: 'room_0303', bodyId: 'body_03', date: '2026-02-20', tempC: 25, humidityPct: 76, inAt: '08:00', outAt: '24:00', verdict: 'suitable', createdAt: now - 86400000 * 18, updatedAt: now - 86400000 * 18 },
   ];
 
   const polishes: Polish[] = [
@@ -279,10 +313,19 @@ export function validateSnapshot(input: unknown): string {
 }
 
 export async function importSnapshot(snapshot: LacquerSnapshot): Promise<void> {
+  // 兼容老版本备份：补齐 v3 新增字段，导入后再由按道次核对重算 dryingRecheck
+  const coats = snapshot.coats.map((coat) => ({
+    ...coat,
+    suggestDryingHours:
+      typeof coat.suggestDryingHours === 'number' && coat.suggestDryingHours > 0
+        ? coat.suggestDryingHours
+        : DEFAULT_SUGGEST_DRYING_HOURS[coat.paintType],
+    dryingRecheck: coat.dryingRecheck === true || coat.dryingRecheck === false ? coat.dryingRecheck : null,
+  }));
   await clearAllTables();
   await db.transaction('rw', TABLE_LIST, async () => {
     await db.bodies.bulkPut(snapshot.bodies);
-    await db.coats.bulkPut(snapshot.coats);
+    await db.coats.bulkPut(coats);
     await db.rooms.bulkPut(snapshot.rooms);
     await db.polishes.bulkPut(snapshot.polishes);
     await db.inlays.bulkPut(snapshot.inlays);

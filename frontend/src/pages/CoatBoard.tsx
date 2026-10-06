@@ -40,8 +40,10 @@ import {
   COAT_STATE_LABEL,
   COAT_STATE_OPTIONS,
   COLOR_NAME_OPTIONS,
+  DEFAULT_SUGGEST_DRYING_HOURS,
   PAINT_TYPE_LABEL,
   PAINT_TYPE_OPTIONS,
+  coatAwaitingRecheck,
   createEmptyCoatDraft,
   type Coat,
   type CoatDraft,
@@ -49,7 +51,6 @@ import {
   type PaintType,
 } from '@/types/coat';
 import { BODY_SHAPE_LABEL } from '@/types/body';
-import { suggestIntervalHours } from '@/utils/humidity';
 
 const FILTER_KEYS = ['paintType', 'state'] as const;
 
@@ -122,9 +123,10 @@ export default function CoatBoard() {
       return;
     }
     setEditing(null);
+    const paintType = suggestion?.paintType ?? 'raw';
     form.setFieldsValue({
-      ...createEmptyCoatDraft(bodyId, nextSeq(bodyId)),
-      paintType: suggestion?.paintType ?? 'raw',
+      ...createEmptyCoatDraft(bodyId, nextSeq(bodyId), paintType),
+      paintType,
     });
     setOpen(true);
   };
@@ -138,6 +140,8 @@ export default function CoatBoard() {
       colorName: coat.colorName,
       coatDate: coat.coatDate,
       thicknessUm: coat.thicknessUm,
+      suggestDryingHours: coat.suggestDryingHours,
+      dryingRecheck: coat.dryingRecheck,
       state: coat.state,
       needRecheck: coat.needRecheck,
     });
@@ -215,16 +219,22 @@ export default function CoatBoard() {
       width: 90,
       sorter: (a, b) => a.seq - b.seq,
       render: (seq: number, record) => (
-        <StageTag state={record.state} seq={seq} needRecheck={record.needRecheck} />
+        <StageTag state={record.state} seq={seq} needRecheck={coatAwaitingRecheck(record)} />
       ),
     },
     { title: '漆种', dataIndex: 'paintType', width: 100, render: (value: PaintType) => <Tag>{PAINT_TYPE_LABEL[value]}</Tag> },
-    { title: '色名', dataIndex: 'colorName', width: 120 },
-    { title: '涂刷日期', dataIndex: 'coatDate', width: 130, sorter: (a, b) => a.coatDate.localeCompare(b.coatDate) },
+    { title: '色名', dataIndex: 'colorName', width: 110 },
+    { title: '涂刷日期', dataIndex: 'coatDate', width: 120, sorter: (a, b) => a.coatDate.localeCompare(b.coatDate) },
+    {
+      title: '建议荫干',
+      dataIndex: 'suggestDryingHours',
+      width: 100,
+      render: (value: number) => `${value} h`,
+    },
     {
       title: '湿膜厚度',
       dataIndex: 'thicknessUm',
-      width: 120,
+      width: 110,
       render: (value: number) => `${value} μm`,
     },
     {
@@ -414,7 +424,17 @@ export default function CoatBoard() {
         cancelText="取消"
         destroyOnClose
       >
-        <Form form={form} layout="vertical" preserve={false}>
+        <Form
+          form={form}
+          layout="vertical"
+          preserve={false}
+          onValuesChange={(changed) => {
+            // 切换漆种时带出该漆种默认建议荫干时长，已手改过的值仅在新建时跟随
+            if (!editing && typeof changed.paintType === 'string') {
+              form.setFieldValue('suggestDryingHours', DEFAULT_SUGGEST_DRYING_HOURS[changed.paintType as PaintType]);
+            }
+          }}
+        >
           <Space size={12} style={{ display: 'flex' }}>
             <Form.Item name="seq" label="道次序号" rules={[{ required: true }]} style={{ flex: 1 }}>
               <InputNumber min={1} max={99} style={{ width: '100%' }} />
@@ -439,24 +459,33 @@ export default function CoatBoard() {
             <Form.Item name="thicknessUm" label="湿膜厚度（μm）" rules={[{ required: true }]} style={{ flex: 1 }}>
               <InputNumber min={5} max={500} style={{ width: '100%' }} />
             </Form.Item>
+            <Form.Item
+              name="suggestDryingHours"
+              label="建议荫干时长（小时）"
+              rules={[{ required: true, message: '请填写建议荫干时长' }]}
+              tooltip="这道涂完到下一道之间，建议在荫房累计停留的时长；荫房页按道次核对以此为准"
+              style={{ flex: 1 }}
+            >
+              <InputNumber min={1} max={720} step={1} style={{ width: '100%' }} />
+            </Form.Item>
             <Form.Item name="state" label="状态" rules={[{ required: true }]} style={{ flex: 1 }}>
               <Select options={[...COAT_STATE_OPTIONS]} />
             </Form.Item>
           </Space>
-          <Form.Item name="needRecheck" label="待复检">
+          <Form.Item name="needRecheck" label="温湿度待复检">
             <Select
               options={[
                 { value: false, label: '正常' },
-                { value: true, label: '待复检（荫房异常）' },
+                { value: true, label: '待复检（荫房温湿度异常）' },
               ]}
             />
           </Form.Item>
           <Alert
             type="warning"
             showIcon
-            message={`环境适宜时，${PAINT_TYPE_LABEL[form.getFieldValue('paintType') as PaintType] ?? '该漆种'}建议间隔约 ${
-              suggestion?.intervalHours ?? suggestIntervalHours('raw')
-            } 小时再进入下一道`}
+            message={`${PAINT_TYPE_LABEL[form.getFieldValue('paintType') as PaintType] ?? '该漆种'}默认建议荫干 ${
+              suggestion?.suggestDryingHours ?? DEFAULT_SUGGEST_DRYING_HOURS.raw
+            } 小时；按道次核对时，累计停留与建议值相差四成及以上自动标记待复检，值守补记进出房补平缺口后标记自动摘除。`}
           />
         </Form>
       </Modal>

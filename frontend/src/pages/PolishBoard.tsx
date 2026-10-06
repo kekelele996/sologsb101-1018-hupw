@@ -42,6 +42,7 @@ import {
   type PolishMethod,
 } from '@/types/polish';
 import { BODY_SHAPE_LABEL } from '@/types/body';
+import { coatAwaitingRecheck } from '@/types/coat';
 
 export default function PolishBoard() {
   const { message } = AntdApp.useApp();
@@ -153,6 +154,7 @@ export default function PolishBoard() {
       message.warning('未找到对应道次');
       return;
     }
+    // 打磨合格后清除温湿度越界标记；按道次核出的时长待复检由对账自动维护，不在此清除
     await updateCoat(coat.id, { state: 'done', needRecheck: false });
     message.success(`第 ${row.seq} 道打磨完成，道次已置为已完成`);
   };
@@ -164,7 +166,7 @@ export default function PolishBoard() {
       width: 120,
       render: (seq: number) => {
         const coat = bodyCoats.find((item) => item.seq === seq);
-        return coat ? <StageTag state={coat.state} seq={seq} needRecheck={coat.needRecheck} /> : `第 ${seq} 道`;
+        return coat ? <StageTag state={coat.state} seq={seq} needRecheck={coatAwaitingRecheck(coat)} /> : `第 ${seq} 道`;
       },
     },
     { title: '磨料目数', dataIndex: 'grit', width: 110, render: (value: number) => <Tag color="gold">{value} 目</Tag> },

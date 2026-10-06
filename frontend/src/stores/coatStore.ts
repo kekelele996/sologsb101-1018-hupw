@@ -4,14 +4,16 @@
  */
 import { create } from 'zustand';
 import { db, createId } from '@/utils/db';
-import type { Coat, CoatDraft, CoatState, PaintType } from '@/types/coat';
-import { nextCoatState } from '@/types/coat';
+import type { Coat, CoatDraft, CoatState, DryingRecheck, PaintType } from '@/types/coat';
+import { DEFAULT_SUGGEST_DRYING_HOURS, nextCoatState } from '@/types/coat';
 import { suggestIntervalHours, suggestPaintType } from '@/utils/humidity';
+import { reconcileAllDrying } from '@/utils/dryingReconcile';
 import { useBodyStore } from './bodyStore';
 
 export interface PaintSuggestion {
   paintType: PaintType;
   intervalHours: number;
+  suggestDryingHours: number;
   sourceCode: string;
   sourceColor: string;
 }
@@ -29,6 +31,13 @@ interface CoatStoreState {
   batchUpdate: (ids: string[], patch: Partial<Coat>) => Promise<void>;
   advanceState: (id: string) => Promise<void>;
   markRecheck: (bodyId: string, recheck: boolean) => Promise<void>;
+  /**
+   * 按道次重算全部道次的荫干时长对账状态并落库。
+   * 值守补记 / 改正进出房、工序管理员调整道次后调用：缺口补平则自动摘掉待复检。
+   * 直接读库计算，避免与内存态竞态；返回发生变化的道次数。
+   * backfill=true 用于首次载入老档案：未对账→有结论的回填保留原 updatedAt。
+   */
+  syncDryingRecheck: (backfill?: boolean) => Promise<number>;
   reorderCoats: (bodyId: string, orderedIds: string[]) => Promise<void>;
   nextSeq: (bodyId: string) => number;
   /** 同器型自动带出上次漆种与间隔建议 */
@@ -62,12 +71,14 @@ export const useCoatStore = create<CoatStoreState>((set, get) => ({
     const now = Date.now();
     const row: Coat = { ...draft, id: createId('coat'), createdAt: now, updatedAt: now };
     await db.coats.put(row);
+    await get().syncDryingRecheck();
     await get().loadCoats();
     return row;
   },
 
   async updateCoat(id, patch) {
     await db.coats.update(id, { ...patch, updatedAt: Date.now() } as never);
+    await get().syncDryingRecheck();
     await get().loadCoats();
   },
 
@@ -82,6 +93,7 @@ export const useCoatStore = create<CoatStoreState>((set, get) => ({
         .map((coat, index) => ({ ...coat, seq: index + 1, updatedAt: Date.now() }));
       if (rest.length > 0) await db.coats.bulkPut(rest);
     }
+    await get().syncDryingRecheck();
     await get().loadCoats();
   },
 
@@ -92,6 +104,7 @@ export const useCoatStore = create<CoatStoreState>((set, get) => ({
       .coats.filter((coat) => ids.includes(coat.id))
       .map((coat) => ({ ...coat, ...patch, updatedAt: now }));
     await db.coats.bulkPut(rows);
+    await get().syncDryingRecheck();
     await get().loadCoats();
   },
 
@@ -111,6 +124,26 @@ export const useCoatStore = create<CoatStoreState>((set, get) => ({
     await get().loadCoats();
   },
 
+  async syncDryingRecheck(backfill = false) {
+    // 直接以库内最新数据为准计算，规避调用链上的内存态时序问题
+    const [allCoats, allRooms] = await Promise.all([db.coats.toArray(), db.rooms.toArray()]);
+    const rows = reconcileAllDrying(allCoats, allRooms);
+    const statusOf = new Map(rows.map((row) => [row.coat.id, row.status]));
+    const now = Date.now();
+    const changed: Coat[] = [];
+    allCoats.forEach((coat) => {
+      const status = statusOf.get(coat.id) ?? 'unreconciled';
+      const nextStatus: DryingRecheck = status === 'unreconciled' ? null : status === 'recheck';
+      if (coat.dryingRecheck !== nextStatus) {
+        // 首次回填老档案（库中为未对账）时保留原 updatedAt，避免台账顺序被迁移动作带跑
+        const preserveTimestamp = backfill && coat.dryingRecheck === null && nextStatus !== null;
+        changed.push(preserveTimestamp ? { ...coat, dryingRecheck: nextStatus } : { ...coat, dryingRecheck: nextStatus, updatedAt: now });
+      }
+    });
+    if (changed.length > 0) await db.coats.bulkPut(changed);
+    return changed.length;
+  },
+
   async reorderCoats(bodyId, orderedIds) {
     const indexOf = new Map(orderedIds.map((id, index) => [id, index]));
     const rows = get()
@@ -122,6 +155,7 @@ export const useCoatStore = create<CoatStoreState>((set, get) => ({
       })
       .map((coat, index) => ({ ...coat, seq: index + 1, updatedAt: Date.now() }));
     await db.coats.bulkPut(rows);
+    await get().syncDryingRecheck();
     await get().loadCoats();
   },
 
@@ -144,6 +178,7 @@ export const useCoatStore = create<CoatStoreState>((set, get) => ({
     return {
       paintType,
       intervalHours: suggestIntervalHours(paintType),
+      suggestDryingHours: DEFAULT_SUGGEST_DRYING_HOURS[paintType],
       sourceCode: previousBody?.code ?? '',
       sourceColor: previousCoat?.colorName ?? '',
     };

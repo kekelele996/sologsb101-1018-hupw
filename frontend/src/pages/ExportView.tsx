@@ -72,6 +72,7 @@ export default function ExportView() {
   const loadBodies = useBodyStore((state) => state.loadBodies);
   const coats = useCoatStore((state) => state.coats);
   const loadCoats = useCoatStore((state) => state.loadCoats);
+  const syncDryingRecheck = useCoatStore((state) => state.syncDryingRecheck);
   const rooms = useRoomStore((state) => state.rooms);
   const loadRooms = useRoomStore((state) => state.loadRooms);
 
@@ -176,14 +177,16 @@ export default function ExportView() {
       cancelText: '取消',
       onOk: async () => {
         await importSnapshot(parsed as LacquerSnapshot);
+        await syncDryingRecheck(true);
         await Promise.all([loadBodies(), loadCoats(), loadRooms()]);
-        message.success('导入完成，数据已覆盖');
+        message.success('导入完成，数据已覆盖并按道次重算荫干时长');
       },
     });
   };
 
   const handleReset = async (): Promise<void> => {
     await resetDatabase();
+    await syncDryingRecheck(true);
     await Promise.all([loadBodies(), loadCoats(), loadRooms()]);
     message.success('已清空并重新载入演示数据');
   };

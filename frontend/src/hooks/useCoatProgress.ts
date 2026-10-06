@@ -8,7 +8,7 @@ import { useCoatStore } from '@/stores/coatStore';
 import { useRoomStore } from '@/stores/roomStore';
 import { dryingHours, roomStayHours } from '@/utils/humidity';
 import { ROOM_VERDICT_LABEL } from '@/types/room';
-import { COAT_STATE_LABEL } from '@/types/coat';
+import { COAT_STATE_LABEL, coatAwaitingRecheck } from '@/types/coat';
 import type { BodyStat } from '@/types/body';
 
 const EMPTY_STAT: BodyStat = {
@@ -89,7 +89,7 @@ export function useCoatProgress(): CoatProgressResult {
       coatTotal,
       coatDone,
       percent: coatTotal === 0 ? 0 : Math.round((coatDone / coatTotal) * 100),
-      recheck: coats.filter((coat) => coat.needRecheck).length,
+      recheck: coats.filter(coatAwaitingRecheck).length,
       roomOver: list.reduce((sum, item) => sum + item.roomOverCount, 0),
     };
   }, [coats, list]);

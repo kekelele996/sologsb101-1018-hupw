@@ -9,6 +9,14 @@ export type PaintType = 'raw' | 'color' | 'topcoat';
 /** 道次状态：待涂 / 已涂 / 待打磨 / 已完成 */
 export type CoatState = 'todo' | 'coated' | 'toPolish' | 'done';
 
+/**
+ * 按道次核对荫干时长后的对账状态：
+ * - null（未对账）：该道窗口内还没有任何荫房记录（老档案照此保留，不算异常）
+ * - false（已对账）：累计停留时长与建议时长相差不足四成
+ * - true（待复检）：累计停留时长与建议时长相差达到四成及以上
+ */
+export type DryingRecheck = boolean | null;
+
 export interface Coat {
   id: string;
   /** 所属胎体 id */
@@ -25,7 +33,11 @@ export interface Coat {
   thicknessUm: number;
   /** 当前状态 */
   state: CoatState;
-  /** 荫房判定异常时回写的「待复检」标记 */
+  /** 工序管理员写明的建议荫干时长（小时），按道次核对以此为基准 */
+  suggestDryingHours: number;
+  /** 按道次核对荫干停留时长后的对账状态，null 为未对账 */
+  dryingRecheck: DryingRecheck;
+  /** 荫房温湿度越界时回写的「待复检」标记 */
   needRecheck: boolean;
   createdAt: number;
   updatedAt: number;
@@ -55,6 +67,13 @@ export const COAT_STATE_COLOR: Record<CoatState, string> = {
 
 export const COAT_STATE_FLOW: readonly CoatState[] = ['todo', 'coated', 'toPolish', 'done'];
 
+/** 各漆种默认建议荫干时长（小时），新建道次与 v3 迁移回填使用 */
+export const DEFAULT_SUGGEST_DRYING_HOURS: Record<PaintType, number> = {
+  raw: 24,
+  color: 18,
+  topcoat: 12,
+};
+
 export const PAINT_TYPE_OPTIONS: ReadonlyArray<{ value: PaintType; label: string }> = [
   { value: 'raw', label: '生漆' },
   { value: 'color', label: '色漆' },
@@ -81,15 +100,22 @@ export function nextCoatState(state: CoatState): CoatState {
   return COAT_STATE_FLOW[index + 1] as CoatState;
 }
 
-export function createEmptyCoatDraft(bodyId: string, seq: number): CoatDraft {
+/** 道次是否处于待复检：温湿度越界回写，或按道次核出荫干时长差出四成 */
+export function coatAwaitingRecheck(coat: Coat): boolean {
+  return coat.needRecheck === true || coat.dryingRecheck === true;
+}
+
+export function createEmptyCoatDraft(bodyId: string, seq: number, paintType: PaintType = 'raw'): CoatDraft {
   return {
     bodyId,
     seq,
-    paintType: 'raw',
+    paintType,
     colorName: '漆黑',
     coatDate: new Date().toISOString().slice(0, 10),
     thicknessUm: 40,
     state: 'todo',
+    suggestDryingHours: DEFAULT_SUGGEST_DRYING_HOURS[paintType],
+    dryingRecheck: null,
     needRecheck: false,
   };
 }

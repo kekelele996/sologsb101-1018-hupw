@@ -20,6 +20,7 @@ import { useCoatStore } from './stores/coatStore';
 import { useRoomStore } from './stores/roomStore';
 import { initDatabase } from './utils/db';
 import { BODY_MATERIAL_LABEL, BODY_SHAPE_LABEL, BODY_STATE_LABEL } from './types/body';
+import { coatAwaitingRecheck } from './types/coat';
 
 const { Header, Sider, Content, Footer } = Layout;
 
@@ -33,6 +34,7 @@ export default function App() {
   const loadBodies = useBodyStore((state) => state.loadBodies);
   const coats = useCoatStore((state) => state.coats);
   const loadCoats = useCoatStore((state) => state.loadCoats);
+  const syncDryingRecheck = useCoatStore((state) => state.syncDryingRecheck);
   const rooms = useRoomStore((state) => state.rooms);
   const loadRooms = useRoomStore((state) => state.loadRooms);
 
@@ -42,7 +44,12 @@ export default function App() {
       try {
         await initDatabase();
         if (cancelled) return;
-        await Promise.all([loadBodies(), loadCoats(), loadRooms()]);
+        await Promise.all([loadBodies(), loadRooms()]);
+        if (cancelled) return;
+        // v3 迁移 / 老备份导入后，按现有荫房记录补算道次对账状态（未对账保持未对账）
+        await syncDryingRecheck(true);
+        if (cancelled) return;
+        await loadCoats();
       } catch (error) {
         if (cancelled) return;
         message.error(`本地数据库初始化失败：${error instanceof Error ? error.message : '未知错误'}`);
@@ -51,7 +58,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [loadBodies, loadCoats, loadRooms, message]);
+  }, [loadBodies, loadCoats, loadRooms, syncDryingRecheck, message]);
 
   const currentBody = bodies.find((body) => body.id === currentBodyId) ?? null;
   const selectedKey = location.pathname.startsWith('/coats')
@@ -131,7 +138,7 @@ export default function App() {
             <Button size="small" onClick={() => navigate(ROUTES.coats)}>
               进入道次编排
             </Button>
-            <Badge count={coats.filter((coat) => coat.needRecheck).length} color="#c9963c" title="待复检道次" />
+            <Badge count={coats.filter(coatAwaitingRecheck).length} color="#c9963c" title="待复检道次（温湿度越界 / 荫干时长差出四成）" />
           </Space>
         </Header>
 
