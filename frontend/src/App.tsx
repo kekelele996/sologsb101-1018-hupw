@@ -43,6 +43,8 @@ export default function App() {
         await initDatabase();
         if (cancelled) return;
         await Promise.all([loadBodies(), loadCoats(), loadRooms()]);
+        // 启动即按道次重核荫干时长：老档案升级后自动核标，缺记录的按未对账保留
+        await useCoatStore.getState().syncDryingRecheck();
       } catch (error) {
         if (cancelled) return;
         message.error(`本地数据库初始化失败：${error instanceof Error ? error.message : '未知错误'}`);

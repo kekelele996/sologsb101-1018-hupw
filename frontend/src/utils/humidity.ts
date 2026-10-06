@@ -12,6 +12,18 @@ import type { BodyShape } from '@/types/body';
 export const HUMIDITY_RANGE = { min: 65, max: 85 } as const;
 export const TEMP_RANGE = { min: 20, max: 28 } as const;
 
+/** 荫房容量：同一天最多同时容纳的件数（按胎体计，同一件进出多趟只占一个位子），超出后到的顺延到第二天 */
+export const ROOM_DAILY_CAPACITY = 3;
+
+/** 日期字符串平移 n 天（yyyy-MM-dd），用于进房排期顺延 */
+export function shiftDate(date: string, days: number): string {
+  const base = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(base.getTime())) return date;
+  base.setDate(base.getDate() + days);
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${base.getFullYear()}-${pad(base.getMonth() + 1)}-${pad(base.getDate())}`;
+}
+
 /** 判定：湿度低于下限为偏干，高于上限为偏湿，温度越界同样按干湿提示 */
 export function judgeVerdict(tempC: number, humidityPct: number): RoomVerdict {
   if (humidityPct < HUMIDITY_RANGE.min) return 'dry';

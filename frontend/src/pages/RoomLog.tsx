@@ -1,6 +1,8 @@
 /**
  * /rooms 荫房温湿度记录
- * 按区间判定适宜度并回写关联道次为「待复检」，支持日期区间与判定筛选（同步 URL query）。
+ * 按区间判定适宜度并回写关联道次为「待复检」，支持日期区间与判定筛选（同步 URL query）；
+ * 按道次核荫干时长：涂完到下一道之间的荫房停留累计与建议时长比对，差出四成标待复检，
+ * 补录进出房后自动复核摘标；新登记超过当日容量自动顺延到第二天。
  * 消费 Room、Coat；复用 <FilterBar>、<StatBadge>、<EmptyPanel>。
  */
 import { useMemo, useState } from 'react';
@@ -36,8 +38,24 @@ import {
   type RoomDraft,
   type RoomVerdict,
 } from '@/types/room';
+import { PAINT_TYPE_LABEL } from '@/types/coat';
 import { BODY_SHAPE_LABEL } from '@/types/body';
-import { dewPoint, dryingAdvice, dryingHours, judgeVerdict, rangeHint, roomStayHours } from '@/utils/humidity';
+import {
+  ROOM_DAILY_CAPACITY,
+  dewPoint,
+  dryingAdvice,
+  dryingHours,
+  judgeVerdict,
+  rangeHint,
+  roomStayHours,
+} from '@/utils/humidity';
+import {
+  DRYING_RECON_COLOR,
+  DRYING_RECON_LABEL,
+  RECHECK_DEVIATION,
+  reconcileCoats,
+  type DryingReconRow,
+} from '@/utils/reconcile';
 
 const FILTER_KEYS = ['verdict'] as const;
 
@@ -100,6 +118,16 @@ export default function RoomLog() {
     };
   }, [rooms]);
 
+  /** 按道次荫干对账：已按偏差绝对值降序，差得多的排在最前，未对账在最后 */
+  const reconRows = useMemo(() => reconcileCoats(coats, rooms), [coats, rooms]);
+  const reconStat = useMemo(
+    () => ({
+      recheck: reconRows.filter((row) => row.status === 'recheck').length,
+      pending: reconRows.filter((row) => row.status === 'pending').length,
+    }),
+    [reconRows],
+  );
+
   const openCreate = (): void => {
     const bodyId = bodies[0]?.id ?? '';
     if (!bodyId) {
@@ -129,8 +157,10 @@ export default function RoomLog() {
       await updateRoom(editing.id, values);
       message.success(`已更新 ${values.date} 的荫房记录（判定：${ROOM_VERDICT_LABEL[verdict]}）`);
     } else {
-      await createRoom(values);
-      if (verdict === 'suitable') {
+      const created = await createRoom(values);
+      if (created.date !== values.date) {
+        message.info(`当日进房已满 ${ROOM_DAILY_CAPACITY} 件，该件顺延至 ${created.date}，已记下的记录不动`);
+      } else if (verdict === 'suitable') {
         message.success('已记录荫房温湿度，环境适宜');
       } else {
         message.warning(`判定为${ROOM_VERDICT_LABEL[verdict]}，已回写关联道次为待复检`);
@@ -220,12 +250,66 @@ export default function RoomLog() {
 
   const previewVerdict = judgeVerdict(draftTemp, draftHumidity);
 
+  /** 对账列表列：偏差大的已由 reconcileCoats 排在最前 */
+  const reconColumns: ColumnsType<DryingReconRow> = [
+    {
+      title: '胎体',
+      key: 'body',
+      width: 110,
+      render: (_value, row) => <Tag color="#8c2f1f">{bodyCode(row.coat.bodyId)}</Tag>,
+    },
+    {
+      title: '道次',
+      key: 'seq',
+      width: 140,
+      render: (_value, row) => `第 ${row.coat.seq} 道 · ${PAINT_TYPE_LABEL[row.coat.paintType]}`,
+    },
+    { title: '涂刷日期', key: 'coatDate', width: 110, render: (_value, row) => row.coat.coatDate },
+    {
+      title: '建议荫干',
+      key: 'plan',
+      width: 100,
+      render: (_value, row) => `${row.planHours} 小时`,
+    },
+    {
+      title: '实际停留',
+      key: 'actual',
+      width: 150,
+      render: (_value, row) =>
+        row.roomCount === 0 ? '—' : `${row.actualHours} 小时（${row.roomCount} 趟）`,
+    },
+    {
+      title: '偏差',
+      key: 'deviation',
+      width: 100,
+      render: (_value, row) =>
+        row.deviation === null ? (
+          '—'
+        ) : (
+          <Typography.Text type={row.status === 'recheck' ? 'danger' : undefined}>
+            {`${row.deviation > 0 ? '+' : ''}${Math.round(row.deviation * 100)}%`}
+          </Typography.Text>
+        ),
+    },
+    {
+      title: '对账结果',
+      key: 'status',
+      width: 110,
+      render: (_value, row) => (
+        <Tag color={DRYING_RECON_COLOR[row.status]}>{DRYING_RECON_LABEL[row.status]}</Tag>
+      ),
+    },
+  ];
+
   return (
     <div>
       <div className="gb-page-head">
         <div>
           <h2>荫房温湿度记录</h2>
-          <p>{rangeHint()}；越界判定会回写关联道次为「待复检」，作为漆层缺陷回溯依据。</p>
+          <p>
+            {rangeHint()}；越界判定会回写关联道次为「待复检」。荫房每日最多容纳 {ROOM_DAILY_CAPACITY}{' '}
+            件，超出后到的自动顺延到第二天。
+          </p>
         </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
           新增记录
@@ -239,6 +323,8 @@ export default function RoomLog() {
         <StatBadge label="偏干" value={stat.dry} suffix="次" tone="warning" />
         <StatBadge label="偏湿" value={stat.wet} suffix="次" tone="info" />
         <StatBadge label="平均湿度" value={stat.avgHumidity} suffix="%" />
+        <StatBadge label="对账待复检" value={reconStat.recheck} suffix="道" tone="danger" />
+        <StatBadge label="未对账" value={reconStat.pending} suffix="道" />
       </div>
 
       <FilterBar
@@ -298,6 +384,35 @@ export default function RoomLog() {
         )}
       </Card>
 
+      <Card
+        className="gb-table-card"
+        style={{ marginTop: 16 }}
+        styles={{ body: { padding: 0 } }}
+        title="道次荫干对账"
+        extra={
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            涂完到下一道之间的荫房停留累计与建议时长比对，偏差达 {Math.round(RECHECK_DEVIATION * 100)}
+            % 自动标待复检；补录漏记的进出房后缺口补平自动摘标；老档案缺记录的按未对账保留，不计异常。
+          </Typography.Text>
+        }
+      >
+        {reconRows.length === 0 ? (
+          <EmptyPanel
+            title="还没有可对账的髹涂道次"
+            description="先在道次页编排髹涂道次并登记建议荫干时长，再按进出房登记荫房记录。"
+            size="small"
+          />
+        ) : (
+          <Table<DryingReconRow>
+            rowKey={(row) => row.coat.id}
+            size="small"
+            pagination={{ pageSize: 8 }}
+            columns={reconColumns}
+            dataSource={reconRows}
+          />
+        )}
+      </Card>
+
       <Modal
         open={open}
         title={editing ? `编辑 ${editing.date} 的荫房记录` : '新增荫房记录'}
@@ -345,6 +460,9 @@ export default function RoomLog() {
             </Typography.Text>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {dryingAdvice(draftTemp, draftHumidity, 40)}
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              荫房每日最多容纳 {ROOM_DAILY_CAPACITY} 件，当日已满时新登记自动顺延到第二天。
             </Typography.Text>
           </Space>
         </Form>

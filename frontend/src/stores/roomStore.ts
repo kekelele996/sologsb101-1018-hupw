@@ -1,11 +1,13 @@
 /**
  * 荫房记录状态管理（Zustand）
- * 维护荫房记录与超标派生统计；湿度越界即回写关联道次为「待复检」。
+ * 维护荫房记录与超标派生统计；湿度越界即回写关联道次为「待复检」；
+ * 新登记超过荫房当日容量时后到的自动顺延到第二天（已登记的记录不动）；
+ * 进出房记录变动后触发按道次荫干对账，缺口补平自动摘标。
  */
 import { create } from 'zustand';
 import { db, createId } from '@/utils/db';
 import type { Room, RoomDraft, RoomVerdict } from '@/types/room';
-import { judgeVerdict } from '@/utils/humidity';
+import { judgeVerdict, ROOM_DAILY_CAPACITY, shiftDate } from '@/utils/humidity';
 import { useCoatStore } from './coatStore';
 
 interface RoomStoreState {
@@ -50,13 +52,26 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
   async createRoom(draft) {
     const now = Date.now();
     const verdict = judgeVerdict(draft.tempC, draft.humidityPct);
-    const row: Room = { ...draft, verdict, id: createId('room'), createdAt: now, updatedAt: now };
+    // 容量控制：同一天要进房的件数（按胎体计，同一件进出多趟算一件）超过荫房容量时，
+    // 后到的顺延到第二天；值守已记下的记录保持不动
+    let date = draft.date;
+    for (let guard = 0; guard < 30; guard += 1) {
+      const bodiesIn = new Set(
+        get()
+          .rooms.filter((room) => room.date === date)
+          .map((room) => room.bodyId),
+      );
+      if (bodiesIn.size < ROOM_DAILY_CAPACITY || bodiesIn.has(draft.bodyId)) break;
+      date = shiftDate(date, 1);
+    }
+    const row: Room = { ...draft, date, verdict, id: createId('room'), createdAt: now, updatedAt: now };
     await db.rooms.put(row);
     // 越界即回写关联道次为待复检
     if (verdict !== 'suitable') {
       await useCoatStore.getState().markRecheck(row.bodyId, true);
     }
     await get().loadRooms();
+    await useCoatStore.getState().syncDryingRecheck();
     return row;
   },
 
@@ -71,11 +86,13 @@ export const useRoomStore = create<RoomStoreState>((set, get) => ({
       await useCoatStore.getState().markRecheck(existing.bodyId, true);
     }
     await get().loadRooms();
+    await useCoatStore.getState().syncDryingRecheck();
   },
 
   async removeRoom(id) {
     await db.rooms.delete(id);
     await get().loadRooms();
+    await useCoatStore.getState().syncDryingRecheck();
   },
 
   overCount() {

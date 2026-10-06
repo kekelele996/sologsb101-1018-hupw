@@ -125,6 +125,7 @@ export default function CoatBoard() {
     form.setFieldsValue({
       ...createEmptyCoatDraft(bodyId, nextSeq(bodyId)),
       paintType: suggestion?.paintType ?? 'raw',
+      planDryHours: suggestion?.intervalHours ?? suggestIntervalHours('raw'),
     });
     setOpen(true);
   };
@@ -138,6 +139,7 @@ export default function CoatBoard() {
       colorName: coat.colorName,
       coatDate: coat.coatDate,
       thicknessUm: coat.thicknessUm,
+      planDryHours: coat.planDryHours,
       state: coat.state,
       needRecheck: coat.needRecheck,
     });
@@ -146,7 +148,8 @@ export default function CoatBoard() {
 
   const submit = async (): Promise<void> => {
     const values = await form.validateFields();
-    const payload: CoatDraft = { ...values };
+    // recheckByDrying 不在表单内：新建默认 false，编辑保留原值，由对账流程自动维护
+    const payload: CoatDraft = { ...values, recheckByDrying: editing?.recheckByDrying ?? false };
     if (editing) {
       await updateCoat(editing.id, payload);
       message.success(`已更新第 ${payload.seq} 道工序`);
@@ -226,6 +229,13 @@ export default function CoatBoard() {
       dataIndex: 'thicknessUm',
       width: 120,
       render: (value: number) => `${value} μm`,
+    },
+    {
+      title: '建议荫干',
+      dataIndex: 'planDryHours',
+      width: 110,
+      sorter: (a, b) => a.planDryHours - b.planDryHours,
+      render: (value: number) => `${value} 小时`,
     },
     {
       title: '操作',
@@ -438,6 +448,14 @@ export default function CoatBoard() {
           <Space size={12} style={{ display: 'flex' }}>
             <Form.Item name="thicknessUm" label="湿膜厚度（μm）" rules={[{ required: true }]} style={{ flex: 1 }}>
               <InputNumber min={5} max={500} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item
+              name="planDryHours"
+              label="建议荫干时长（小时）"
+              rules={[{ required: true, message: '请填写建议荫干时长' }]}
+              style={{ flex: 1 }}
+            >
+              <InputNumber min={1} max={240} style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item name="state" label="状态" rules={[{ required: true }]} style={{ flex: 1 }}>
               <Select options={[...COAT_STATE_OPTIONS]} />

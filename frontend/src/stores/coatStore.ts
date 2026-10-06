@@ -1,12 +1,14 @@
 /**
  * 髹涂道次状态管理（Zustand）
- * 维护道次顺序与状态推进，支持拖拽重排落库重编号、批量改漆种与状态。
+ * 维护道次顺序与状态推进，支持拖拽重排落库重编号、批量改漆种与状态；
+ * 道次或荫房记录变动后按道次重核荫干时长，自动标 / 摘「待复检」。
  */
 import { create } from 'zustand';
 import { db, createId } from '@/utils/db';
 import type { Coat, CoatDraft, CoatState, PaintType } from '@/types/coat';
 import { nextCoatState } from '@/types/coat';
 import { suggestIntervalHours, suggestPaintType } from '@/utils/humidity';
+import { reconcileCoats } from '@/utils/reconcile';
 import { useBodyStore } from './bodyStore';
 
 export interface PaintSuggestion {
@@ -29,6 +31,8 @@ interface CoatStoreState {
   batchUpdate: (ids: string[], patch: Partial<Coat>) => Promise<void>;
   advanceState: (id: string) => Promise<void>;
   markRecheck: (bodyId: string, recheck: boolean) => Promise<void>;
+  /** 按道次重核荫干时长：差出四成标待复检，缺口补平自动摘标（不动湿度越界标） */
+  syncDryingRecheck: () => Promise<void>;
   reorderCoats: (bodyId: string, orderedIds: string[]) => Promise<void>;
   nextSeq: (bodyId: string) => number;
   /** 同器型自动带出上次漆种与间隔建议 */
@@ -63,12 +67,14 @@ export const useCoatStore = create<CoatStoreState>((set, get) => ({
     const row: Coat = { ...draft, id: createId('coat'), createdAt: now, updatedAt: now };
     await db.coats.put(row);
     await get().loadCoats();
+    await get().syncDryingRecheck();
     return row;
   },
 
   async updateCoat(id, patch) {
     await db.coats.update(id, { ...patch, updatedAt: Date.now() } as never);
     await get().loadCoats();
+    await get().syncDryingRecheck();
   },
 
   async removeCoat(id) {
@@ -83,6 +89,7 @@ export const useCoatStore = create<CoatStoreState>((set, get) => ({
       if (rest.length > 0) await db.coats.bulkPut(rest);
     }
     await get().loadCoats();
+    await get().syncDryingRecheck();
   },
 
   async batchUpdate(ids, patch) {
@@ -93,6 +100,7 @@ export const useCoatStore = create<CoatStoreState>((set, get) => ({
       .map((coat) => ({ ...coat, ...patch, updatedAt: now }));
     await db.coats.bulkPut(rows);
     await get().loadCoats();
+    await get().syncDryingRecheck();
   },
 
   async advanceState(id) {
@@ -107,8 +115,32 @@ export const useCoatStore = create<CoatStoreState>((set, get) => ({
     const affected = get().coats.filter((coat) => coat.bodyId === bodyId && coat.state !== 'done');
     if (affected.length === 0) return;
     const now = Date.now();
-    await db.coats.bulkPut(affected.map((coat) => ({ ...coat, needRecheck: recheck, updatedAt: now })));
+    // 湿度越界来源的标记：recheckByDrying 置 false，对账同步不会动它
+    await db.coats.bulkPut(
+      affected.map((coat) => ({ ...coat, needRecheck: recheck, recheckByDrying: false, updatedAt: now })),
+    );
     await get().loadCoats();
+  },
+
+  async syncDryingRecheck() {
+    const rooms = await db.rooms.toArray();
+    const rows = reconcileCoats(get().coats, rooms);
+    const statusByCoat = new Map(rows.map((row) => [row.coat.id, row.status]));
+    const now = Date.now();
+    const changed: Coat[] = [];
+    get().coats.forEach((coat) => {
+      const drying = statusByCoat.get(coat.id) === 'recheck';
+      // 只摘对账自己标上的标记；湿度越界等其它来源的待复检保留
+      const kept = coat.needRecheck && !coat.recheckByDrying;
+      const needRecheck = kept || drying;
+      if (needRecheck !== coat.needRecheck || drying !== coat.recheckByDrying) {
+        changed.push({ ...coat, needRecheck, recheckByDrying: drying, updatedAt: now });
+      }
+    });
+    if (changed.length > 0) {
+      await db.coats.bulkPut(changed);
+      await get().loadCoats();
+    }
   },
 
   async reorderCoats(bodyId, orderedIds) {
@@ -123,6 +155,7 @@ export const useCoatStore = create<CoatStoreState>((set, get) => ({
       .map((coat, index) => ({ ...coat, seq: index + 1, updatedAt: Date.now() }));
     await db.coats.bulkPut(rows);
     await get().loadCoats();
+    await get().syncDryingRecheck();
   },
 
   nextSeq(bodyId) {

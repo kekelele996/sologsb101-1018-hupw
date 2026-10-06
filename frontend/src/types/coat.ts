@@ -25,8 +25,12 @@ export interface Coat {
   thicknessUm: number;
   /** 当前状态 */
   state: CoatState;
-  /** 荫房判定异常时回写的「待复检」标记 */
+  /** 本道建议荫干时长（小时），工序管理员在道次页登记，对账时与实际停留比对 */
+  planDryHours: number;
+  /** 荫房判定异常或荫干对账超差时回写的「待复检」标记 */
   needRecheck: boolean;
+  /** 待复检标记是否来自荫干时长对账（自动对账只摘自己标上的标记，不动湿度越界标） */
+  recheckByDrying: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -90,6 +94,9 @@ export function createEmptyCoatDraft(bodyId: string, seq: number): CoatDraft {
     coatDate: new Date().toISOString().slice(0, 10),
     thicknessUm: 40,
     state: 'todo',
+    // 生漆默认建议荫干 24 小时，与 utils/humidity 的 suggestIntervalHours('raw') 一致
+    planDryHours: 24,
     needRecheck: false,
+    recheckByDrying: false,
   };
 }
